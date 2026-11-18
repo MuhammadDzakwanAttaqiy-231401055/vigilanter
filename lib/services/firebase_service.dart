@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:vigilanter_flutter/models/notification_model.dart';
 import 'package:vigilanter_flutter/state/upload_laporan_state.dart';
 import '../models/laporan_model.dart';
+import 'package:http/http.dart' as http;
 
 class FirebaseService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -29,27 +31,49 @@ class FirebaseService {
   }
 
   Future<String?> uploadVideoWithProgress(
-    File file,
-    String userId,
-    UploadLaporanState uploadState,
-  ) async {
+      File file,
+      String userId,
+      UploadLaporanState uploadState,
+      ) async {
     try {
-      final ref = FirebaseStorage.instance
-          .ref()
-          .child('laporan/$userId/${DateTime.now().millisecondsSinceEpoch}.mp4');
-  
-      final uploadTask = ref.putFile(file);
-  
-      uploadTask.snapshotEvents.listen((event) {
-        final progress =
-            event.bytesTransferred / event.totalBytes;
-        uploadState.updateProgress(progress);
-      });
-  
-      final snapshot = await uploadTask;
-      return await snapshot.ref.getDownloadURL();
+      // 1. Ganti dengan domain hosting Ummu Hafidzah Anda
+      final String uploadUrl = "http://ummuhafidzah.sch.id/vigilanter/upload_video.php";
+
+      // Update UI state ke 50% (karena package http tidak melacak byte-per-byte)
+      uploadState.updateProgress(0.5);
+
+      // 2. Siapkan Request Multipart
+      var request = http.MultipartRequest('POST', Uri.parse(uploadUrl));
+
+      // Masukkan file video
+      var videoFile = await http.MultipartFile.fromPath('video', file.path);
+      request.files.add(videoFile);
+
+      // Masukkan data tambahan
+      request.fields['user_id'] = userId;
+
+      // 3. Kirim ke Hosting
+      var streamedResponse = await request.send();
+      var response = await http.Response.fromStream(streamedResponse);
+
+      // 4. Proses Respons dari Server PHP
+      if (response.statusCode == 200) {
+        uploadState.updateProgress(1.0); // 100% Selesai
+
+        final jsonResponse = jsonDecode(response.body);
+
+        if (jsonResponse['status'] == 'success') {
+          return jsonResponse['url']; // Kembalikan URL publik video dari hosting
+        } else {
+          uploadState.error(jsonResponse['message'] ?? 'Upload ditolak oleh server');
+          return null;
+        }
+      } else {
+        uploadState.error("Server error: ${response.statusCode}");
+        return null;
+      }
     } catch (e) {
-      uploadState.error(e.toString());
+      uploadState.error("Gagal terhubung ke hosting: $e");
       return null;
     }
   }
@@ -106,6 +130,19 @@ class FirebaseService {
       debugPrint("Error getRiwayatLaporan: $e");
       return [];
     }
+  }
+
+  // Fungsi baru untuk memantau riwayat laporan secara real-time
+  Stream<List<LaporanModel>> streamRiwayatLaporan(String userId) {
+    return _firestore
+        .collection("reports")
+        .where("user_id", isEqualTo: userId)
+        .snapshots() // <-- Kunci real-time ada di sini
+        .map((snapshot) {
+      return snapshot.docs
+          .map((doc) => LaporanModel.fromFirestore(doc.id, doc.data()))
+          .toList();
+    });
   }
   
   Stream<LaporanModel> streamById(String reportId) {
